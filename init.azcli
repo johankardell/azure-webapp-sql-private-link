@@ -1,0 +1,115 @@
+#!/bin/bash
+
+# Based on: https://docs.microsoft.com/en-us/azure/private-link/create-private-endpoint-cli
+# Using Azure CLI 2.0.74
+
+RESOURCEGROUP="Group-Webapp-SQL-Private-Link"
+LOCATION="westeurope"
+
+VNET_NAME="vnet-webapp-sql-private-link"
+VNET_IPRANGE="10.0.0.0/8"
+SQL_SUBNET_NAME="subnet-sql"
+SQL_SUBNET_IPRANGE="10.0.0.0/24"
+WEBAPP_SUBNET_NAME="subnet-webapp"
+WEBAPP_SUBNET_IPRANGE="10.0.1.0/24"
+
+APPSERVICE_PLAN_NAME="asp-web-azure-sql-private-link"
+WEBAPP_NAME="web-azure-sql-private-link"
+
+SQLSERVER_NAME="sql-private-link-test"
+SQL_ADMINUSER="sqladmin1"
+SQL_ADMINPASSWORD="do_not_commit_p4$$words_to_git"
+DB_NAME="db-sample"
+PRIVATE_ENDPOINT_NAME="sql-endpoint"
+SQL_CONNECTION_NAME="sql-connection"
+
+#Create Resource group
+az group create --name $RESOURCEGROUP --location $LOCATION
+
+# Create VNET
+az network vnet create \
+    --name $VNET_NAME \
+    --resource-group $RESOURCEGROUP \
+    --address-prefix $VNET_IPRANGE
+
+# Create Subnet for Webapp
+az network vnet subnet create \
+    --name $WEBAPP_SUBNET_NAME \
+    --vnet-name $VNET_NAME \
+    --resource-group $RESOURCEGROUP \
+    --address-prefixes $WEBAPP_SUBNET_IPRANGE
+
+# Create Subnet for SQL Azure
+az network vnet subnet create \
+    --name $SQL_SUBNET_NAME \
+    --vnet-name $VNET_NAME \
+    --resource-group $RESOURCEGROUP \
+    --address-prefixes $SQL_SUBNET_IPRANGE
+
+# Disable subnet private endpoint policies 
+az network vnet subnet update \
+    --name $SQL_SUBNET_NAME \
+    --resource-group $RESOURCEGROUP \
+    --vnet-name $VNET_NAME \
+    --disable-private-endpoint-network-policies true
+
+
+
+# Create an App service plan
+az appservice plan create \
+    --name $APPSERVICE_PLAN_NAME \
+    --resource-group $RESOURCEGROUP \
+    --sku s1
+
+ # Create a Webapp
+ az webapp create \
+  --resource-group $RESOURCEGROUP \
+  --name $WEBAPP_NAME \
+  --plan $APPSERVICE_PLAN_NAME
+
+# Add VNet integration to webapp
+az webapp vnet-integration add \
+    --resource-group $RESOURCEGROUP \
+    --name $WEBAPP_NAME \
+    --vnet $VNET_NAME \
+    --subnet $WEBAPP_SUBNET_NAME
+
+
+
+# Create Azure SQL Server
+az sql server create \
+    --name $SQLSERVER_NAME \
+    --resource-group $RESOURCEGROUP \
+    --location $LOCATION \
+    --admin-user $SQL_ADMINUSER \
+    --admin-password $SQL_ADMINPASSWORD 
+
+# Create a sample database
+az sql db create \
+    --resource-group $RESOURCEGROUP \
+    --server $SQLSERVER_NAME \
+    --name $DB_NAME \
+    --sample-name AdventureWorksLT \
+    --edition GeneralPurpose \
+    --family Gen4 \
+    --capacity 1 
+
+SQL_SERVER_ID=$(az sql server list --query "[?name=='$SQLSERVER_NAME'].id" -o tsv)
+
+# Create the Private endpoint
+az network private-endpoint create \
+    --name $PRIVATE_ENDPOINT_NAME \
+    --resource-group $RESOURCEGROUP \
+    --vnet-name $VNET_NAME \
+    --subnet $SQL_SUBNET_NAME \
+    --private-connection-resource-id $SQL_SERVER_ID \
+    --group-ids sqlServer \
+    --connection-name $SQL_CONNECTION_NAME  
+
+
+
+
+
+# Delete resource group
+echo "ResourceGroup: $RESOURCEGROUP"
+az group delete --resource-group $RESOURCEGROUP
