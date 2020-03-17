@@ -6,12 +6,22 @@
 RESOURCEGROUP="Group-Webapp-SQL-Private-Link"
 LOCATION="westeurope"
 
+PIP_NATGW_NAME="pip-nat-gw"
+NAT_GW_NAME="nat-gw"
+FW_NAME="fw-privatelink"
+ROUTETABLE_NAME="rt-webapp"
+
 VNET_NAME="vnet-webapp-sql-private-link"
 VNET_IPRANGE="10.0.0.0/8"
+
+FW_SUBNET_NAME="AzureFirewallSubnet"
+FW_SUBNET_IPRANGE="10.0.0.0/24"
+
 SQL_SUBNET_NAME="subnet-sql"
-SQL_SUBNET_IPRANGE="10.0.0.0/24"
+SQL_SUBNET_IPRANGE="10.0.1.0/24"
+
 WEBAPP_SUBNET_NAME="subnet-webapp"
-WEBAPP_SUBNET_IPRANGE="10.0.1.0/24"
+WEBAPP_SUBNET_IPRANGE="10.0.5.0/24"
 
 APPSERVICE_PLAN_NAME="asp-web-azure-sql-private-link"
 WEBAPP_NAME="web-azure-sql-private-link"
@@ -23,8 +33,15 @@ DB_NAME="db-sample"
 PRIVATE_ENDPOINT_NAME="sql-endpoint"
 SQL_CONNECTION_NAME="sql-connection"
 
+VM_PIP_NAME="pip-vm-ubuntu"
+VM_SUBNET_NAME="subnet-vm"
+VM_SUBNET_IPRANGE="10.0.10.0/24"
+VM_NAME="vm-ubuntuhost"
+
 #Create Resource group
-az group create --name $RESOURCEGROUP --location $LOCATION
+az group create \
+    --name $RESOURCEGROUP \
+    --location $LOCATION
 
 # Create VNET
 az network vnet create \
@@ -32,19 +49,65 @@ az network vnet create \
     --resource-group $RESOURCEGROUP \
     --address-prefix $VNET_IPRANGE
 
-# Create Subnet for Webapp
+#Setup NAT GW PIP
+az network public-ip create \
+    --name $PIP_NATGW_NAME \
+    --resource-group $RESOURCEGROUP \
+    --location $LOCATION \
+    --sku Standard
+
+# Setup NAT GW
+az network nat gateway create \
+    --resource-group $RESOURCEGROUP \
+    --name $NAT_GW_NAME \
+    --location $LOCATION \
+    --public-ip-addresses $PIP_NAME 
+
+# Create route table
+az network route-table create \
+    --name $ROUTETABLE_NAME \
+    --resource-group $RESOURCEGROUP \
+    --location $LOCATION
+
+# Add default route via firewall to route table
+az network route-table route create \
+    --address-prefix 0.0.0.0/0 \
+    --next-hop-type VirtualAppliance \
+    --name Internet \
+    --route-table-name $ROUTETABLE_NAME \
+    --resource-group $RESOURCEGROUP \
+    --next-hop-ip-address 10.0.0.4
+
+# Create Subnet for Azure FW
+az network vnet subnet create \
+    --name AzureFirewallSubnet \
+    --vnet-name $VNET_NAME \
+    --resource-group $RESOURCEGROUP \
+    --address-prefixes $FW_SUBNET_IPRANGE
+
+# Create Subnet for Webapp (Cannot use NAT GW)
 az network vnet subnet create \
     --name $WEBAPP_SUBNET_NAME \
     --vnet-name $VNET_NAME \
     --resource-group $RESOURCEGROUP \
-    --address-prefixes $WEBAPP_SUBNET_IPRANGE
+    --address-prefixes $WEBAPP_SUBNET_IPRANGE \
+    --route-table $ROUTETABLE_NAME
 
 # Create Subnet for SQL Azure
 az network vnet subnet create \
     --name $SQL_SUBNET_NAME \
     --vnet-name $VNET_NAME \
     --resource-group $RESOURCEGROUP \
-    --address-prefixes $SQL_SUBNET_IPRANGE
+    --address-prefixes $SQL_SUBNET_IPRANGE \
+    --nat-gateway $NAT_GW_NAME
+
+# Create Subnet for VM
+az network vnet subnet create \
+    --name $VM_SUBNET_NAME \
+    --vnet-name $VNET_NAME \
+    --resource-group $RESOURCEGROUP \
+    --address-prefixes $VM_SUBNET_IPRANGE \
+    --nat-gateway $NAT_GW_NAME
 
 # Disable subnet private endpoint policies 
 az network vnet subnet update \
@@ -53,7 +116,23 @@ az network vnet subnet update \
     --vnet-name $VNET_NAME \
     --disable-private-endpoint-network-policies true
 
+# Create Azure Firewall for SNAT of Webapp
+az network firewall create \
+    --name $FW_NAME \
+    --resource-group $RESOURCEGROUP \
+    --vnet-name $VNET_NAME
 
+# Create Azure Firewall rule
+az network firewall application-rule create \                                                                                                                                                                      [12:43]
+    --collection-name outbound-internet \
+    --firewall-name $FW_NAME \
+    --name internet \
+    --protocols Https=443 \
+    --resource-group $RESOURCEGROUP \
+    --action Allow \
+    --priority 100 \
+    --source-addresses $WEBAPP_SUBNET_IPRANGE \
+    --target-fqdns "ipinfo.io"
 
 # Create an App service plan
 az appservice plan create \
@@ -67,14 +146,18 @@ az appservice plan create \
   --name $WEBAPP_NAME \
   --plan $APPSERVICE_PLAN_NAME
 
+# Configure routing for webapp
+az webapp config appsettings set \
+    --resource-group $RESOURCEGROUP \
+    --name $WEBAPP_NAME \
+    --settings WEBSITE_VNET_ROUTE_ALL=1
+
 # Add VNet integration to webapp
 az webapp vnet-integration add \
     --resource-group $RESOURCEGROUP \
     --name $WEBAPP_NAME \
     --vnet $VNET_NAME \
     --subnet $WEBAPP_SUBNET_NAME
-
-
 
 # Create Azure SQL Server
 az sql server create \
@@ -106,10 +189,27 @@ az network private-endpoint create \
     --group-ids sqlServer \
     --connection-name $SQL_CONNECTION_NAME  
 
+#Setup NAT GW PIP
+az network public-ip create \
+    --name $VM_PIP_NAME \
+    --resource-group $RESOURCEGROUP \
+    --location $LOCATION \
+    --sku Standard
+
+# Create a Test VM
+az vm create \
+    --name $VM_NAME \
+    --resource-group $RESOURCEGROUP \
+    --subnet $VM_SUBNET_NAME \
+    --vnet-name $VNET_NAME \
+    --image UbuntuLTS \
+    --public-ip-address $VM_PIP_NAME \
+    --generate-ssh-keys
+
 
 
 
 
 # Delete resource group
-echo "ResourceGroup: $RESOURCEGROUP"
+echo "Deleting ResourceGroup: $RESOURCEGROUP"
 az group delete --resource-group $RESOURCEGROUP
