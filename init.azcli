@@ -61,7 +61,7 @@ az network nat gateway create \
     --resource-group $RESOURCEGROUP \
     --name $NAT_GW_NAME \
     --location $LOCATION \
-    --public-ip-addresses $PIP_NAME 
+    --public-ip-addresses $PIP_NATGW_NAME 
 
 # Create route table
 az network route-table create \
@@ -120,10 +120,11 @@ az network vnet subnet update \
 az network firewall create \
     --name $FW_NAME \
     --resource-group $RESOURCEGROUP \
+    --location $LOCATION \
     --vnet-name $VNET_NAME
 
 # Create Azure Firewall rule
-az network firewall application-rule create \                                                                                                                                                                      [12:43]
+az network firewall application-rule create \
     --collection-name outbound-internet \
     --firewall-name $FW_NAME \
     --name internet \
